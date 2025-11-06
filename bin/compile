@@ -122,8 +122,10 @@ export BUN_INSTALL=$BUILD_DIR/.heroku
 # Explicitly set BUN_DIR to a temp location that we'll clean
 export BUN_DIR=/tmp/bun-cache-$$
 
-log_info "Downloading Bun $FORCED_BUN_VERSION from official source"
-curl -fsSL https://bun.sh/install | bash -s "bun-$FORCED_BUN_VERSION"
+# The Bun install script expects format: bun-vX.Y.Z (with 'v' prefix)
+BUN_INSTALL_TAG="bun-v$FORCED_BUN_VERSION"
+log_info "Downloading Bun from tag: $BUN_INSTALL_TAG"
+curl -fsSL https://bun.sh/install | bash -s "$BUN_INSTALL_TAG"
 
 export PATH="$BUN_INSTALL/bin:$PATH"
 log_success "Bun installed: $(bun --version)"
