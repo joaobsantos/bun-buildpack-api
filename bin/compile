@@ -322,9 +322,18 @@ cd $BUILD_DIR
 
 # Determine web process command
 WEB_CMD=""
-# Always run from app directory, not runtime directory
-# The start command (e.g., "bun run start") will handle the correct path to the bundle
-WEB_CMD="cd $BP_APP_DIR && $BP_START_COMMAND"
+
+# For bundled builds, run from dist directory where dependencies are installed
+# For non-bundled builds, run from app directory
+if [ -f "$EXEC_DIR/dist/package.json" ]; then
+  # Bundled build - run from dist directory
+  WEB_CMD="cd $BP_APP_DIR/dist && $BP_START_COMMAND"
+  log_info "Bundled build - will run from dist directory"
+else
+  # Non-bundled build - run from app directory
+  WEB_CMD="cd $BP_APP_DIR && $BP_START_COMMAND"
+  log_info "Non-bundled build - will run from app directory"
+fi
 
 echo "web: $WEB_CMD" > Procfile
 log_success "Created Procfile: web: $WEB_CMD"
@@ -333,42 +342,69 @@ log_success "Created Procfile: web: $WEB_CMD"
 if is_true "$BP_CLEAN"; then
   log_step "Cleaning up to reduce slug size"
 
-  # Preserve workspace packages but remove external dependencies
-  if [ -d "$BUILD_DIR/node_modules" ]; then
-    ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
-    log_info "Root node_modules size: $ROOT_NM_SIZE"
+  # For bundled builds, we only need the production dependencies
+  # Check if this is a bundled build by looking at dist/package.json
+  if [ -f "$EXEC_DIR/dist/package.json" ]; then
+    log_info "Detected bundled build - installing production dependencies only"
 
-    # Create a temp directory for workspace packages
-    WORKSPACE_BACKUP="$BUILD_DIR/.workspace-backup"
-    mkdir -p "$WORKSPACE_BACKUP"
-
-    # Copy workspace packages (@newsoftds scope)
-    if [ -d "$BUILD_DIR/node_modules/@newsoftds" ]; then
-      log_info "Preserving workspace packages (@newsoftds)"
-      cp -r "$BUILD_DIR/node_modules/@newsoftds" "$WORKSPACE_BACKUP/"
-      WORKSPACE_SIZE=$(du -sh "$WORKSPACE_BACKUP/@newsoftds" | cut -f1)
-      log_info "Workspace packages size: $WORKSPACE_SIZE"
+    # Remove monorepo node_modules (not needed for bundled app)
+    if [ -d "$BUILD_DIR/node_modules" ]; then
+      ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
+      log_info "Removing monorepo node_modules (size: $ROOT_NM_SIZE)"
+      rm -rf "$BUILD_DIR/node_modules"
     fi
 
-    # Remove all node_modules
-    rm -rf "$BUILD_DIR/node_modules"
+    # Install production dependencies for the bundled app
+    cd "$EXEC_DIR/dist"
+    log_info "Installing production dependencies in dist/"
+    bun install --production --frozen-lockfile 2>&1 | indent || {
+      log_warning "Frozen lockfile not available, installing without it"
+      bun install --production 2>&1 | indent
+    }
 
-    # Restore only workspace packages
-    mkdir -p "$BUILD_DIR/node_modules"
-    if [ -d "$WORKSPACE_BACKUP/@newsoftds" ]; then
-      cp -r "$WORKSPACE_BACKUP/@newsoftds" "$BUILD_DIR/node_modules/"
-      log_success "Restored workspace packages to node_modules"
+    DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
+    log_info "Installed dependencies size: $DIST_NM_SIZE"
+    cd "$BUILD_DIR"
+  else
+    # Non-bundled build: preserve workspace packages
+    log_info "Non-bundled build - preserving workspace packages"
+
+    if [ -d "$BUILD_DIR/node_modules" ]; then
+      ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
+      log_info "Root node_modules size: $ROOT_NM_SIZE"
+
+      # Create a temp directory for workspace packages
+      WORKSPACE_BACKUP="$BUILD_DIR/.workspace-backup"
+      mkdir -p "$WORKSPACE_BACKUP"
+
+      # Copy workspace packages (@newsoftds scope)
+      if [ -d "$BUILD_DIR/node_modules/@newsoftds" ]; then
+        log_info "Preserving workspace packages (@newsoftds)"
+        cp -r "$BUILD_DIR/node_modules/@newsoftds" "$WORKSPACE_BACKUP/"
+        WORKSPACE_SIZE=$(du -sh "$WORKSPACE_BACKUP/@newsoftds" | cut -f1)
+        log_info "Workspace packages size: $WORKSPACE_SIZE"
+      fi
+
+      # Remove all node_modules
+      rm -rf "$BUILD_DIR/node_modules"
+
+      # Restore only workspace packages
+      mkdir -p "$BUILD_DIR/node_modules"
+      if [ -d "$WORKSPACE_BACKUP/@newsoftds" ]; then
+        cp -r "$WORKSPACE_BACKUP/@newsoftds" "$BUILD_DIR/node_modules/"
+        log_success "Restored workspace packages to node_modules"
+      fi
+
+      # Clean up backup
+      rm -rf "$WORKSPACE_BACKUP"
+
+      FINAL_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1 2>/dev/null || echo "0")
+      log_info "Final node_modules size: $FINAL_NM_SIZE (workspace packages only)"
     fi
-
-    # Clean up backup
-    rm -rf "$WORKSPACE_BACKUP"
-
-    FINAL_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1 2>/dev/null || echo "0")
-    log_info "Final node_modules size: $FINAL_NM_SIZE (workspace packages only)"
   fi
 
-  # Remove app node_modules if different from root
-  if [ -n "$BP_APP_DIR" ] && [ -d "$EXEC_DIR/node_modules" ]; then
+  # Remove app node_modules if different from root and dist
+  if [ -n "$BP_APP_DIR" ] && [ -d "$EXEC_DIR/node_modules" ] && [ "$EXEC_DIR" != "$BUILD_DIR" ]; then
     APP_NM_SIZE=$(du -sh "$EXEC_DIR/node_modules" | cut -f1)
     log_info "Removing app node_modules (size: $APP_NM_SIZE)"
     rm -rf "$EXEC_DIR/node_modules"
