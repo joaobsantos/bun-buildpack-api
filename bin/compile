@@ -322,12 +322,9 @@ cd $BUILD_DIR
 
 # Determine web process command
 WEB_CMD=""
-if [ "$RUNTIME_DIR_CANDIDATE" != "." ]; then
-  # Need to cd into runtime directory first
-  WEB_CMD="cd $BP_APP_DIR/$RUNTIME_DIR_CANDIDATE && $BP_START_COMMAND"
-else
-  WEB_CMD="cd $BP_APP_DIR && $BP_START_COMMAND"
-fi
+# Always run from app directory, not runtime directory
+# The start command (e.g., "bun run start") will handle the correct path to the bundle
+WEB_CMD="cd $BP_APP_DIR && $BP_START_COMMAND"
 
 echo "web: $WEB_CMD" > Procfile
 log_success "Created Procfile: web: $WEB_CMD"
