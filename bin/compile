@@ -326,23 +326,33 @@ if is_true "$BP_CLEAN"; then
     # This is a fallback/verification step
     cd "$EXEC_DIR/dist"
 
-    # Check if node_modules already has the required dependencies
-    if [ -d "node_modules/graphql-yoga" ] && [ -d "node_modules/graphql" ]; then
-      log_info "Dependencies already installed by build script, skipping"
+    # Install dependencies using the install script created by build-heroku.ts
+    # This script handles workspace detection issues
+    if [ -f "install.ts" ]; then
+      log_info "Running custom install script..."
+      if bun install.ts 2>&1 | indent; then
+        log_success "Dependencies installed via custom script"
+      else
+        log_warning "Custom install script failed, trying direct install"
+        # Fallback to direct install
+        rm -f bun.lockb bunfig.toml 2>/dev/null || true
+        if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
+          log_success "Dependencies installed (fallback method)"
+        else
+          log_error "All install attempts failed"
+          exit 1
+        fi
+      fi
     else
       log_info "Installing production dependencies in dist/"
-      # Remove any existing lockfile to avoid conflicts
-      rm -f bun.lockb package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null || true
+      rm -f bun.lockb bunfig.toml 2>/dev/null || true
 
-      # Try multiple install strategies for maximum compatibility
-      if bun install --production --ignore-scripts 2>&1 | indent; then
+      if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
         log_success "Production dependencies installed"
-      elif bun install --ignore-scripts 2>&1 | indent; then
+      elif bun install --no-save --ignore-scripts 2>&1 | indent; then
         log_success "Dependencies installed (non-production mode)"
-      elif bun install --ignore-scripts --force 2>&1 | indent; then
-        log_success "Dependencies installed (forced)"
       else
-        log_error "All install attempts failed"
+        log_error "Install failed"
         exit 1
       fi
     fi
