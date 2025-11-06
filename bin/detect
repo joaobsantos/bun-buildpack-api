@@ -6,10 +6,8 @@ BUILD_DIR=${1:-.}
 
 # Detect Bun projects by presence of package.json or bun.lock
 if [ -f "$BUILD_DIR/package.json" ] || [ -f "$BUILD_DIR/bun.lock" ]; then
-  echo "bun-custom"
+  echo "bun-api-gateway"
   exit 0
 fi
 
 exit 1
-
-

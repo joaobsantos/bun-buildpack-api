@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# NewsoftDS API Buildpack for Heroku
-# Based on bun-buildpack v1.0.1 - Optimized for Nx monorepo API deployments
+# NewsoftDS API Gateway Buildpack for Heroku
+# Forces Bun 1.2.23 for compatibility
 #
 set -e
 
@@ -9,49 +9,40 @@ log_header() { echo ""; echo "🚀 $1"; echo ""; }
 log_step() { echo "   📦 $1"; }
 log_success() { echo "   ✅ $1"; }
 log_info() { echo "   ℹ️  $1"; }
-log_warning() { echo "   ⚠️  $1"; }
 log_error() { echo "   ❌ $1"; }
-indent() { sed "s/^/       /"; }
 
+# 📂 Directory setup
 BUILD_DIR=${1:-.}
 CACHE_DIR=${2:-}
 ENV_DIR=${3:-}
 
-HEROKU_DIR=$BUILD_DIR/.heroku
-BIN_DIR=$HEROKU_DIR/bin
+log_header "NewsoftDS API Gateway Buildpack v1.0 (Bun 1.2.23)"
 
-log_header "NewsoftDS API Buildpack v2.0 (Nx Monorepo Optimized)"
-
-# Function to export env vars from ENV_DIR
+# 🔧 Export environment variables from Heroku
 export_env_dir() {
-  env_dir=$1
-  acceptlist_regex=${2:-''}
-  denylist_regex=${3:-'^(PATH|GIT_DIR|CPATH|CPPATH|LD_PRELOAD|LIBRARY_PATH)$'}
-  if [ -d "$env_dir" ]; then
-    for e in $(ls $env_dir); do
-      echo "$e" | grep -E "$acceptlist_regex" | grep -qvE "$denylist_regex" &&
-      export "$e=$(cat $env_dir/$e)"
+  if [ -d "$1" ]; then
+    for e in $(ls $1); do
+      case $e in
+        PATH|GIT_DIR|CPATH|CPPATH|LD_PRELOAD|LIBRARY_PATH) ;;
+        *) export "$e=$(cat $1/$e)" ;;
+      esac
     done
   fi
 }
 
-# Export Heroku Config Vars
 export_env_dir $ENV_DIR
 
-# After exporting config vars, layer BP_* values over non-prefixed ones
-BP_CLEAN=${BP_CLEAN:-${CLEAN:-true}}
-BP_NODE=${BP_NODE:-${NODE:-false}}
-BP_NODE_VERSION=${BP_NODE_VERSION:-${NODE_VERSION:-22.11.0}}
-BP_BUN_VERSION=${BP_BUN_VERSION:-"latest"}
-BP_INSTALL_COMMAND=${BP_INSTALL_COMMAND:-${INSTALL_COMMAND:-"bun install"}}
-BP_BUILD_COMMAND=${BP_BUILD_COMMAND:-${BUILD_COMMAND:-"bun run build:heroku"}}
-BP_START_COMMAND=${BP_START_COMMAND:-${START_COMMAND:-"bun run start"}}
-BP_APP_DIR=${BP_APP_DIR:-${APP_DIR:-}}
-BP_RUNTIME_DIR=${BP_RUNTIME_DIR:-${RUNTIME_DIR:-dist}}
-BP_GENERATE_RUNTIME_PKG=${BP_GENERATE_RUNTIME_PKG:-${GENERATE_RUNTIME_PKG:-true}}
-BP_PROD_INSTALL=${BP_PROD_INSTALL:-${PROD_INSTALL:-true}}
+# ⚙️ Configuration with defaults
+BP_NODE=${BP_NODE:-"true"}
+BP_NODE_VERSION=${BP_NODE_VERSION:-"22.11.0"}
+BP_INSTALL=${BP_INSTALL:-"bun install"}
+BP_CLEAN=${BP_CLEAN:-"true"}
 
-# Boolean helper: treat true/1/yes/on (any case) as true
+# FORCE BUN VERSION 1.2.23
+FORCED_BUN_VERSION="1.2.23"
+log_info "FORCING Bun version: $FORCED_BUN_VERSION (required for API Gateway compatibility)"
+
+# Helper function to check boolean values
 is_true() {
   case "$1" in
     true|TRUE|True|1|yes|YES|Yes|on|ON|On) return 0 ;;
@@ -62,56 +53,43 @@ is_true() {
 # ❗ Validate required environment variables
 VALIDATION_FAILED=false
 
-if [ -z "$BP_APP_DIR" ]; then
-  log_error "BP_APP_DIR environment variable is required!"
-  log_info "Set it with: heroku config:set BP_APP_DIR=apis/servers/api-gateway-server"
-  log_info "Available API servers:"
-  find $BUILD_DIR/apis/servers -name "package.json" -path "*/servers/*" 2>/dev/null | head -5 || true
+if [ -z "$BP_BUILD" ]; then
+  log_error "BP_BUILD environment variable is required!"
+  log_info "Set it with: heroku config:set BP_BUILD=@newsoftds/api-gateway-server"
+  log_info "Or: heroku config:set BP_BUILD=apis/servers/api-gateway-server"
+  VALIDATION_FAILED=true
+fi
+
+if [ -z "$BP_START_COMMAND" ]; then
+  log_error "BP_START_COMMAND environment variable is required!"
+  log_info "Set it with: heroku config:set BP_START_COMMAND='bun run start'"
   VALIDATION_FAILED=true
 fi
 
 if [ "$VALIDATION_FAILED" = true ]; then
   log_header "❌ Build Failed - Missing Required Environment Variables"
   log_info "Please set the required variables and redeploy:"
-  log_info "heroku config:set BP_APP_DIR=apis/servers/api-gateway-server"
-  log_info "Optional: heroku config:set BP_BUILD_COMMAND='bun run build:heroku'"
-  log_info "Optional: heroku config:set BP_START_COMMAND='bun index.js'"
+  log_info "heroku config:set BP_BUILD=@newsoftds/api-gateway-server"
+  log_info "heroku config:set BP_START_COMMAND='bun run start'"
   exit 1
 fi
 
-log_info "App directory: $BP_APP_DIR"
-log_info "Build command: $BP_BUILD_COMMAND"
+log_info "Project to build: $BP_BUILD"
 log_info "Start command: $BP_START_COMMAND"
-log_info "Runtime directory: $BP_RUNTIME_DIR"
 if is_true "$BP_NODE"; then
   log_info "Node.js: enabled (v$BP_NODE_VERSION)"
 else
   log_info "Node.js: disabled (Bun only)"
 fi
-log_info "Bun version: $BP_BUN_VERSION"
 
-# To enable the local source build cache path, copy the files and match the build path with the startup path.
-log_step "Copying build directory to runtime location"
-cp -rT $BUILD_DIR $HOME
-cd $HOME
-log_success "Build directory copied to $HOME"
+# 🏗️ Setup build environment
+HEROKU_DIR=$BUILD_DIR/.heroku
+mkdir -p $HEROKU_DIR/bin
 
-# Determine Bun version
-INSTALL_VERSION_OPTION=""
-if [ -f runtime.bun.txt ]; then
-  INSTALL_VERSION_OPTION="-s bun-$(cat runtime.bun.txt)"
-  log_info "Using Bun version from runtime.bun.txt: $(cat runtime.bun.txt)"
-elif [ -f runtime.txt ]; then
-  INSTALL_VERSION_OPTION="-s bun-$(cat runtime.txt)"
-  log_info "Using Bun version from runtime.txt: $(cat runtime.txt)"
-elif [ "$BP_BUN_VERSION" != "latest" ]; then
-  INSTALL_VERSION_OPTION="-s bun-$BP_BUN_VERSION"
-  log_info "Using Bun version from BP_BUN_VERSION: $BP_BUN_VERSION"
-else
-  log_info "Using latest Bun version"
-fi
+# Move to build directory
+cd $BUILD_DIR
 
-# Install Node.js using prebuilt binaries if BP_NODE is true
+# 📦 Install Node.js (optional)
 if is_true "$BP_NODE"; then
   log_step "Installing Node.js v$BP_NODE_VERSION"
   NODE_DISTRO="node-v$BP_NODE_VERSION-linux-x64"
@@ -131,353 +109,325 @@ if is_true "$BP_NODE"; then
   log_success "Node.js installed: $(node --version)"
 else
   log_step "Skipping Node.js installation (BP_NODE=false)"
-  log_info "Bun-only deployment"
 fi
 
-# Install Bun
-log_step "Installing Bun"
+# 🥯 Install Bun 1.2.23 (FORCED)
+log_step "Installing Bun $FORCED_BUN_VERSION (FORCED VERSION)"
+
+# Clean up any previous Bun installations to avoid bloat
+rm -rf $BUILD_DIR/.heroku/cache $BUILD_DIR/.heroku/.cache $BUILD_DIR/.heroku/install
+log_info "Cleaned previous Bun cache"
+
 export BUN_INSTALL=$BUILD_DIR/.heroku
-export BUN_DIR=$BUILD_DIR/.heroku/cache
-curl -fsSL https://bun.sh/install | bash $INSTALL_VERSION_OPTION
+# Explicitly set BUN_DIR to a temp location that we'll clean
+export BUN_DIR=/tmp/bun-cache-$$
+
+log_info "Downloading Bun $FORCED_BUN_VERSION from official source"
+curl -fsSL https://bun.sh/install | bash -s "bun-$FORCED_BUN_VERSION"
+
 export PATH="$BUN_INSTALL/bin:$PATH"
 log_success "Bun installed: $(bun --version)"
 
-# Set environment variables for runtime
+# Verify we got the correct version
+INSTALLED_VERSION=$(bun --version)
+if [ "$INSTALLED_VERSION" != "$FORCED_BUN_VERSION" ]; then
+  log_error "Bun version mismatch! Expected $FORCED_BUN_VERSION but got $INSTALLED_VERSION"
+  exit 1
+fi
+log_success "Verified Bun version: $FORCED_BUN_VERSION ✅"
+
+# Clean up Bun temp cache immediately
+rm -rf /tmp/bun-cache-*
+log_info "Bun installation size: $(du -sh $BUILD_DIR/.heroku | cut -f1)"
+
+# 📋 Setup runtime environment
 PROFILE_PATH="$BUILD_DIR/.profile.d/bun.sh"
 mkdir -p $(dirname $PROFILE_PATH)
 if is_true "$BP_NODE"; then
   cat > $PROFILE_PATH << 'EOF'
 export PATH="$HOME/.heroku/node/bin:$PATH"
 export PATH="$HOME/.heroku/bin:$PATH"
-export BUN_DIR="$HOME/.heroku/cache"
 EOF
 else
   cat > $PROFILE_PATH << 'EOF'
 export PATH="$HOME/.heroku/bin:$PATH"
-export BUN_DIR="$HOME/.heroku/cache"
 EOF
 fi
-log_success "Runtime environment configured"
 
-# Resolve execution directory (monorepo app dir)
-if [ -n "$BP_APP_DIR" ] && [ -d "$BUILD_DIR/$BP_APP_DIR" ]; then
-  EXEC_DIR="$BUILD_DIR/$BP_APP_DIR"
-  log_info "Using APP_DIR: $BP_APP_DIR"
-else
-  EXEC_DIR="$BUILD_DIR"
-  log_info "Using root directory (no APP_DIR specified)"
+# 📦 Install monorepo dependencies
+log_step "Installing monorepo dependencies"
+
+# Handle BP_APP_DIR if set (for compatibility with old buildpack)
+if [ -n "$BP_APP_DIR" ]; then
+  log_info "BP_APP_DIR is set: $BP_APP_DIR"
+  if [ -d "$BP_APP_DIR" ]; then
+    cd "$BP_APP_DIR"
+    log_info "Changed to directory: $BP_APP_DIR"
+  else
+    log_error "BP_APP_DIR directory not found: $BP_APP_DIR"
+    exit 1
+  fi
 fi
 
-# Install monorepo dependencies from root
-log_step "Installing monorepo dependencies"
-cd $BUILD_DIR
-log_info "Running: $BP_INSTALL_COMMAND --ignore-scripts"
+log_info "Running: $BP_INSTALL --ignore-scripts"
 
 # Add --ignore-scripts to prevent postinstall database connections
-if [[ "$BP_INSTALL_COMMAND" == *"--ignore-scripts"* ]]; then
-  eval $BP_INSTALL_COMMAND
+if [[ "$BP_INSTALL" == *"--ignore-scripts"* ]]; then
+  eval $BP_INSTALL
 else
-  eval "$BP_INSTALL_COMMAND --ignore-scripts"
+  eval "$BP_INSTALL --ignore-scripts"
 fi
 
 if [ $? -eq 0 ]; then
-  log_success "Monorepo dependencies installed"
+  log_success "Dependencies installed"
 else
   log_error "Dependency installation failed"
   exit 1
 fi
 
-# Move to app directory for build
-cd $EXEC_DIR
+# Return to build directory
+cd $BUILD_DIR
 
-# Determine runtime directory inside the app
-if [ -d "$EXEC_DIR/$BP_RUNTIME_DIR" ]; then
-  RUNTIME_DIR_CANDIDATE="$BP_RUNTIME_DIR"
-elif [ -d "$EXEC_DIR/dist" ]; then
-  RUNTIME_DIR_CANDIDATE="dist"
-elif [ -d "$EXEC_DIR/build" ]; then
-  RUNTIME_DIR_CANDIDATE="build"
+# 🏗️ Build the project
+log_step "Building $BP_BUILD"
+
+# Determine project path
+PROJECT_PATH=""
+if [[ "$BP_BUILD" == @* ]]; then
+  # It's a package name, try to find it
+  case $BP_BUILD in
+    "@newsoftds/api-gateway-server")
+      PROJECT_PATH="apis/servers/api-gateway-server"
+      ;;
+    "@newsoftds/api-clinic-server")
+      PROJECT_PATH="apis/servers/api-clinic-server"
+      ;;
+    "@newsoftds/api-university-server")
+      PROJECT_PATH="apis/servers/api-university-server"
+      ;;
+    *)
+      # Try to auto-detect
+      for project_file in $(find . -name "package.json" -not -path "./node_modules/*" 2>/dev/null); do
+        project_name=$(cat "$project_file" | bun -e 'const p=JSON.parse(await Bun.stdin.text()); console.log(p.name || "")' 2>/dev/null)
+        if [ "$project_name" = "$BP_BUILD" ]; then
+          PROJECT_PATH=$(dirname "$project_file")
+          break
+        fi
+      done
+      ;;
+  esac
 else
-  RUNTIME_DIR_CANDIDATE="."
+  # It's already a path
+  PROJECT_PATH="$BP_BUILD"
 fi
-RUNTIME_PATH="$EXEC_DIR/$RUNTIME_DIR_CANDIDATE"
-log_info "Runtime directory (pre-build): $RUNTIME_PATH"
-export EXEC_DIR
-export RUNTIME_PATH
 
-# Build the application
-log_step "Building application"
-if [ -f "$EXEC_DIR/package.json" ]; then
-  # Determine build command
-  DETECTED_BUILD_CMD=""
-  if grep -q '"build:heroku"' "$EXEC_DIR/package.json"; then
-    DETECTED_BUILD_CMD="bun run build:heroku"
-    log_info "Found build:heroku script"
-  elif grep -q '"build"' "$EXEC_DIR/package.json"; then
-    DETECTED_BUILD_CMD="$BP_BUILD_COMMAND"
-    log_info "Using BP_BUILD_COMMAND: $BP_BUILD_COMMAND"
-  fi
-
-  if [ -n "$DETECTED_BUILD_CMD" ]; then
-    log_info "Running: $DETECTED_BUILD_CMD"
-    eval "$DETECTED_BUILD_CMD"
-    log_success "Build completed"
-  else
-    log_error "No build script found in package.json"
-    log_info "Add 'build:heroku' or 'build' script to package.json"
-    exit 1
-  fi
-else
-  log_error "No package.json found in $EXEC_DIR"
+if [ -z "$PROJECT_PATH" ] || [ ! -d "$PROJECT_PATH" ]; then
+  log_error "Project not found: $BP_BUILD"
+  log_info "Check that BP_BUILD is either a valid package name or path"
   exit 1
 fi
 
-# Re-resolve runtime directory after build
-if [ -d "$EXEC_DIR/$BP_RUNTIME_DIR" ]; then
-  RUNTIME_DIR_CANDIDATE="$BP_RUNTIME_DIR"
-elif [ -d "$EXEC_DIR/dist" ]; then
-  RUNTIME_DIR_CANDIDATE="dist"
-elif [ -d "$EXEC_DIR/build" ]; then
-  RUNTIME_DIR_CANDIDATE="build"
+log_info "Project path: $PROJECT_PATH"
+cd "$PROJECT_PATH"
+
+# Check for custom build command
+if [ -n "$BP_BUILD_COMMAND" ]; then
+  log_info "Running custom build command: $BP_BUILD_COMMAND"
+  eval $BP_BUILD_COMMAND
+elif [ -f "package.json" ] && grep -q '"build:heroku"' package.json; then
+  log_info "Running build:heroku script"
+  bun run build:heroku
+elif [ -f "package.json" ] && grep -q '"build"' package.json; then
+  log_info "Running build script"
+  bun run build
 else
-  RUNTIME_DIR_CANDIDATE="."
-fi
-RUNTIME_PATH="$EXEC_DIR/$RUNTIME_DIR_CANDIDATE"
-log_info "Runtime directory (post-build): $RUNTIME_PATH"
-
-# Generate minimal package.json in runtime dir if needed
-if is_true "$BP_GENERATE_RUNTIME_PKG" && [ "$RUNTIME_DIR_CANDIDATE" != "." ]; then
-  if [ ! -f "$RUNTIME_PATH/package.json" ] && [ -f "$EXEC_DIR/package.json" ]; then
-    log_step "Generating runtime package.json"
-    bun -e '
-      import { readFileSync, writeFileSync } from "node:fs"
-      const execDir = process.env.EXEC_DIR
-      const runtimePath = process.env.RUNTIME_PATH
-      const appPkg = JSON.parse(readFileSync(execDir + "/package.json", "utf8"))
-      const filterDeps = (deps = {}) => Object.fromEntries(
-        Object.entries(deps).filter(([_, v]) => typeof v === "string" && !v.startsWith("workspace:"))
-      )
-      const runtimePkg = {
-        name: (appPkg.name || "app") + "-runtime",
-        private: true,
-        type: appPkg.type,
-        dependencies: filterDeps(appPkg.dependencies || {})
-      }
-      if (Object.keys(runtimePkg.dependencies).length === 0) {
-        runtimePkg.dependencies = {}
-      }
-      writeFileSync(runtimePath + "/package.json", JSON.stringify(runtimePkg, null, 2))
-    '
-    log_success "Generated runtime package.json"
-  else
-    log_info "Runtime package.json already exists or generation not needed"
-  fi
+  log_error "No build script found in package.json"
+  log_info "Add a 'build:heroku' or 'build' script to your package.json"
+  log_info "Or set BP_BUILD_COMMAND environment variable"
+  exit 1
 fi
 
-# Production dependency installation is handled in cleanup phase
-# (after workspace packages are copied)
+log_success "Build completed"
 
-# Create Procfile with start command
-log_step "Creating Procfile"
+# 📦 Check dist directory
+DIST_DIR="dist"
+if [ -n "$BP_RUNTIME_DIR" ]; then
+  DIST_DIR="$BP_RUNTIME_DIR"
+  log_info "Using custom runtime directory: $DIST_DIR"
+fi
+
+if [ ! -d "$DIST_DIR" ]; then
+  log_error "Build did not create a $DIST_DIR directory"
+  exit 1
+fi
+
+# Move dist contents to app root
+log_step "Preparing deployment"
+
+# Handle BP_START_IN_RUNTIME flag
+if [ "$BP_START_IN_RUNTIME" = "true" ]; then
+  log_info "BP_START_IN_RUNTIME is true - copying runtime dir to root"
+  cp -r $DIST_DIR/* $BUILD_DIR/
+else
+  log_info "Copying build output from $DIST_DIR to $BUILD_DIR"
+  cp -r $DIST_DIR/* $BUILD_DIR/
+fi
+
 cd $BUILD_DIR
 
-# Determine web process command
-WEB_CMD=""
-
-# For bundled builds, run from dist directory where dependencies are installed
-# For non-bundled builds, run from app directory
-if [ -f "$EXEC_DIR/dist/package.json" ]; then
-  # Bundled build - run from dist directory
-  WEB_CMD="cd $BP_APP_DIR/dist && $BP_START_COMMAND"
-  log_info "Bundled build - will run from dist directory"
-else
-  # Non-bundled build - run from app directory
-  WEB_CMD="cd $BP_APP_DIR && $BP_START_COMMAND"
-  log_info "Non-bundled build - will run from app directory"
+# 🔍 Check if we have a package.json in the build output
+if [ ! -f "package.json" ]; then
+  log_error "No package.json found in build output"
+  log_info "Your build script should generate a package.json in dist/"
+  exit 1
 fi
 
-echo "web: $WEB_CMD" > Procfile
-log_success "Created Procfile: web: $WEB_CMD"
+# 📦 Install production dependencies
+log_step "Installing production dependencies"
 
-# Cleanup to reduce slug size
+# Remove any existing lockfile to ensure fresh install
+rm -f bun.lockb bun.lock package-lock.json yarn.lock
+log_info "Removed any existing lockfiles"
+
+# Force Bun to not use frozen lockfile (Heroku might set CI=true)
+export CI=false
+export BUN_INSTALL_FROZEN_LOCKFILE=false
+
+# Use bun for production install
+log_info "Running: bun install --production --ignore-scripts --no-frozen-lockfile"
+bun install --production --ignore-scripts --no-frozen-lockfile || {
+  log_error "Installation failed, trying without production flag..."
+  bun install --ignore-scripts --no-frozen-lockfile || {
+    log_error "Installation failed completely"
+    exit 1
+  }
+}
+log_success "Production dependencies installed"
+
+# 🎯 Create Procfile with BP_START_COMMAND
+log_step "Creating Procfile"
+
+# Use BP_START_COMMAND directly
+START_CMD="$BP_START_COMMAND"
+log_info "Using start command: $START_CMD"
+
+# Write the Procfile
+echo "web: $START_CMD" > Procfile
+log_success "Created Procfile with: web: $START_CMD"
+
+# 🧹 Cleanup to reduce slug size
 if is_true "$BP_CLEAN"; then
   log_step "Cleaning up to reduce slug size"
 
-  # For bundled builds, workspace packages are either bundled or physically copied
-  # Check if this is a bundled build by looking at dist/package.json
-  if [ -f "$EXEC_DIR/dist/package.json" ]; then
-    log_info "Detected bundled build - setting up dependencies"
+  # Show what's taking space before cleanup
+  log_info "Largest directories before cleanup:"
+  du -sh * 2>/dev/null | sort -rh | head -10 || true
 
-    # Workspace packages are already in place:
-    # - Simple packages (@newsoftds/graphiql-auth, etc.) are BUNDLED into index.js
-    # - api-client-server is PHYSICALLY COPIED to dist/node_modules/@newsoftds/api-client-server
-    # So we don't need to copy anything from root node_modules
+  # Remove source directories (we already copied dist to root)
+  rm -rf apis web desktop packages utils tools apps
+  log_info "Removed source directories"
 
-    # Just verify api-client-server is there
-    if [ -d "$EXEC_DIR/dist/node_modules/@newsoftds/api-client-server" ]; then
-      WORKSPACE_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules/@newsoftds" | cut -f1)
-      log_info "Workspace packages already in place (size: $WORKSPACE_SIZE)"
-    else
-      log_warning "api-client-server not found in dist/node_modules - build may have failed"
-    fi
+  # Keep node_modules for runtime
+  log_info "Keeping node_modules for runtime dependencies"
 
-    # Install production dependencies for the bundled app
-    # NOTE: Build script may have already installed dependencies
-    # This is a fallback/verification step
-    cd "$EXEC_DIR/dist"
-
-    # Check if build script already installed dependencies (lockfile exists)
-    if [ -f "bun.lockb" ]; then
-      log_success "Dependencies already installed by build script (lockfile exists)"
-      log_info "Running verification install with frozen lockfile"
-
-      # Enable pipefail so pipe doesn't swallow exit codes
-      set -o pipefail
-
-      # Use frozen lockfile to verify/ensure deps match what was installed during build
-      if bun install --frozen-lockfile --no-save --ignore-scripts 2>&1 | indent; then
-        log_success "Dependencies verified (frozen lockfile)"
-      else
-        log_error "Install verification failed"
-        exit 1
-      fi
-
-      # Disable pipefail after install
-      set +o pipefail
-    else
-      # Install dependencies with BUN_CONFIG_FROZEN_LOCKFILE=false to override CI defaults
-      # Heroku sets CI=true which makes Bun default to frozen lockfile mode
-      log_info "Installing production dependencies in dist/"
-
-      # Remove non-bun lockfiles to prevent conflicts
-      rm -f package-lock.json yarn.lock 2>/dev/null || true
-
-      # Enable pipefail so pipe doesn't swallow exit codes
-      set -o pipefail
-
-      # Export the environment variable so bun install sees it
-      export BUN_CONFIG_FROZEN_LOCKFILE=false
-
-      if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
-        log_success "Production dependencies installed"
-      elif bun install --no-save --ignore-scripts 2>&1 | indent; then
-        log_success "Dependencies installed (non-production mode)"
-      else
-        log_error "Install failed - this should cause the build to fail"
-        exit 1
-      fi
-
-      # Disable pipefail after install
-      set +o pipefail
-    fi
-
-    DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
-    log_info "Total dist/node_modules size: $DIST_NM_SIZE"
-    cd "$BUILD_DIR"
-
-    # Now remove monorepo node_modules (not needed anymore)
-    if [ -d "$BUILD_DIR/node_modules" ]; then
-      ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
-      log_info "Removing monorepo node_modules (size: $ROOT_NM_SIZE)"
-      rm -rf "$BUILD_DIR/node_modules"
-    fi
-  else
-    # Non-bundled build: preserve workspace packages
-    log_info "Non-bundled build - preserving workspace packages"
-
-    if [ -d "$BUILD_DIR/node_modules" ]; then
-      ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
-      log_info "Root node_modules size: $ROOT_NM_SIZE"
-
-      # Create a temp directory for workspace packages
-      WORKSPACE_BACKUP="$BUILD_DIR/.workspace-backup"
-      mkdir -p "$WORKSPACE_BACKUP"
-
-      # Copy workspace packages (@newsoftds scope)
-      if [ -d "$BUILD_DIR/node_modules/@newsoftds" ]; then
-        log_info "Preserving workspace packages (@newsoftds)"
-        cp -r "$BUILD_DIR/node_modules/@newsoftds" "$WORKSPACE_BACKUP/"
-        WORKSPACE_SIZE=$(du -sh "$WORKSPACE_BACKUP/@newsoftds" | cut -f1)
-        log_info "Workspace packages size: $WORKSPACE_SIZE"
-      fi
-
-      # Remove all node_modules
-      rm -rf "$BUILD_DIR/node_modules"
-
-      # Restore only workspace packages
-      mkdir -p "$BUILD_DIR/node_modules"
-      if [ -d "$WORKSPACE_BACKUP/@newsoftds" ]; then
-        cp -r "$WORKSPACE_BACKUP/@newsoftds" "$BUILD_DIR/node_modules/"
-        log_success "Restored workspace packages to node_modules"
-      fi
-
-      # Clean up backup
-      rm -rf "$WORKSPACE_BACKUP"
-
-      FINAL_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1 2>/dev/null || echo "0")
-      log_info "Final node_modules size: $FINAL_NM_SIZE (workspace packages only)"
-    fi
-  fi
-
-  # Remove app node_modules if different from root and dist
-  if [ -n "$BP_APP_DIR" ] && [ -d "$EXEC_DIR/node_modules" ] && [ "$EXEC_DIR" != "$BUILD_DIR" ]; then
-    APP_NM_SIZE=$(du -sh "$EXEC_DIR/node_modules" | cut -f1)
-    log_info "Removing app node_modules (size: $APP_NM_SIZE)"
-    rm -rf "$EXEC_DIR/node_modules"
-  fi
-
-  # Remove caches
-  rm -rf $BUILD_DIR/tmp
-  rm -rf $BUILD_DIR/.cache
-  rm -rf $BUILD_DIR/.nx
-  rm -rf $HEROKU_DIR/install/cache
-  rm -rf $HEROKU_DIR/install
-  log_info "Removed build caches"
+  # Remove caches and build artifacts
+  rm -rf .nx .cache tmp .heroku/cache
+  rm -rf *.md *.lock *.lockb tsconfig*.json nx.json biome.json
+  log_info "Removed build artifacts and caches"
 
   # Remove git directory
-  if [ -d "$BUILD_DIR/.git" ]; then
-    GIT_SIZE=$(du -sh "$BUILD_DIR/.git" | cut -f1)
+  if [ -d ".git" ]; then
+    GIT_SIZE=$(du -sh .git | cut -f1)
     log_info "Removing .git directory (size: $GIT_SIZE)"
-    rm -rf "$BUILD_DIR/.git"
+    rm -rf .git
   fi
 
-  # Remove unnecessary config files
-  rm -rf $BUILD_DIR/*.md
-  rm -rf $BUILD_DIR/tsconfig*.json
-  rm -rf $BUILD_DIR/nx.json
-  rm -rf $BUILD_DIR/biome.json
-  log_info "Removed config files"
+  # Clean .heroku directory
+  if [ -d ".heroku" ]; then
+    log_info "Contents of .heroku directory:"
+    du -sh .heroku/* 2>/dev/null | sort -rh | head -10 || true
 
-  # Show final sizes
-  log_info "Final sizes:"
-  if [ -d "$RUNTIME_PATH/node_modules" ]; then
-    RUNTIME_NM_SIZE=$(du -sh "$RUNTIME_PATH/node_modules" | cut -f1)
-    log_info "  Runtime node_modules: $RUNTIME_NM_SIZE"
+    # Remove cache directories but keep bin and node
+    rm -rf .heroku/cache .heroku/tmp .heroku/src .heroku/plugins .heroku/.cache
+
+    # Remove the massive install directory but keep bun executable
+    if [ -f ".heroku/bin/bun" ] && [ -d ".heroku/install" ]; then
+      INSTALL_SIZE=$(du -sh .heroku/install | cut -f1)
+      log_info "Removing .heroku/install directory (size: $INSTALL_SIZE)"
+      rm -rf .heroku/install
+    fi
+
+    # Clean package caches
+    find .heroku -type d -name "node_modules" -exec rm -rf {} + 2>/dev/null || true
+    find .heroku -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
+    find .heroku -type d -name "cache" -exec rm -rf {} + 2>/dev/null || true
+
+    log_info "Cleaned .heroku directory (kept bin and node)"
+
+    # Check final .heroku size
+    HEROKU_SIZE=$(du -sh .heroku | cut -f1)
+    log_info "Final .heroku directory size: $HEROKU_SIZE"
   fi
 
-  HEROKU_SIZE=$(du -sh "$HEROKU_DIR" | cut -f1)
-  log_info "  .heroku directory: $HEROKU_SIZE"
+  # Show what's left
+  log_info "Remaining files after cleanup:"
+  du -sh * 2>/dev/null | sort -rh | head -10 || true
 
-  SLUG_SIZE=$(du -sh "$BUILD_DIR" | cut -f1)
-  log_success "Cleanup complete - slug size: $SLUG_SIZE"
+  SLUG_SIZE=$(du -sh . | cut -f1)
+  log_success "Cleanup complete - final slug size: $SLUG_SIZE"
 else
   log_info "Skipping cleanup (BP_CLEAN not set to true)"
 fi
 
-# Final summary
-log_header "Build Summary"
-log_success "App directory: $BP_APP_DIR"
-log_success "Runtime directory: $RUNTIME_DIR_CANDIDATE"
-log_success "Start command: $BP_START_COMMAND"
+# 🔍 Verify executables exist
+log_step "Verifying runtime executables"
 if is_true "$BP_NODE"; then
-  log_success "Runtime: Bun $(bun --version) + Node $(node --version)"
-else
-  log_success "Runtime: Bun $(bun --version)"
-fi
-log_success "Slug size: $(du -sh $BUILD_DIR | cut -f1)"
+  if [ -f ".heroku/node/bin/node" ]; then
+    log_success "Node executable found: .heroku/node/bin/node"
+    if [ -f ".heroku/node/bin/npm" ]; then
+      log_success "NPM executable found: .heroku/node/bin/npm"
+    elif [ -f ".heroku/node/lib/node_modules/npm/bin/npm-cli.js" ]; then
+      ln -sf "../lib/node_modules/npm/bin/npm-cli.js" ".heroku/node/bin/npm"
+      log_success "Created NPM symlink"
+    else
+      log_error "NPM executable NOT found!"
+    fi
 
-log_info "Your app will start with: $WEB_CMD"
-log_info "To change build: heroku config:set BP_BUILD_COMMAND='bun run build'"
-log_info "To change start: heroku config:set BP_START_COMMAND='bun index.js'"
+    if [ ! -f ".heroku/node/bin/npx" ] && [ -f ".heroku/node/lib/node_modules/npm/bin/npx-cli.js" ]; then
+      ln -sf "../lib/node_modules/npm/bin/npx-cli.js" ".heroku/node/bin/npx"
+      log_success "Created NPX symlink"
+    fi
+  else
+    log_error "Node executable NOT found!"
+  fi
+fi
+
+if [ -f ".heroku/bin/bun" ]; then
+  log_success "Bun executable found: .heroku/bin/bun"
+  # Verify version again
+  FINAL_VERSION=$(.heroku/bin/bun --version)
+  if [ "$FINAL_VERSION" != "$FORCED_BUN_VERSION" ]; then
+    log_error "Bun version verification failed! Expected $FORCED_BUN_VERSION but found $FINAL_VERSION"
+    exit 1
+  fi
+  log_success "Bun version verified: $FINAL_VERSION ✅"
+else
+  log_error "Bun executable NOT found!"
+fi
+
+# 📊 Final summary
+log_header "Build Summary"
+log_success "Project: $BP_BUILD"
+log_success "Built from: $PROJECT_PATH"
+log_success "Start command: $BP_START_COMMAND"
+log_success "Slug size: $(du -sh . | cut -f1)"
+if is_true "$BP_NODE"; then
+  log_success "Runtime: Bun $FORCED_BUN_VERSION (FORCED) + Node $(node --version)"
+else
+  log_success "Runtime: Bun $FORCED_BUN_VERSION (FORCED)"
+fi
+
+log_info "Your app will start with: $BP_START_COMMAND"
+log_info "Bun version is LOCKED to $FORCED_BUN_VERSION for compatibility"
 
 log_header "✅ Build Complete - Ready for deployment!"
