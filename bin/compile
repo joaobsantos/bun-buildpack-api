@@ -295,6 +295,14 @@ log_info "Removed any existing lockfiles"
 export CI=false
 export BUN_INSTALL_FROZEN_LOCKFILE=false
 
+# CRITICAL: Remove old monorepo node_modules FIRST before installing production deps
+log_info "Removing old monorepo node_modules..."
+if [ -d "node_modules" ]; then
+  OLD_SIZE=$(du -sh node_modules | cut -f1)
+  log_info "Deleting old node_modules (size: $OLD_SIZE)"
+  rm -rf node_modules
+fi
+
 # Use bun for production install
 log_info "Running: bun install --production --ignore-scripts --no-frozen-lockfile"
 bun install --production --ignore-scripts --no-frozen-lockfile || {
@@ -304,6 +312,13 @@ bun install --production --ignore-scripts --no-frozen-lockfile || {
     exit 1
   }
 }
+
+# Verify new node_modules size
+if [ -d "node_modules" ]; then
+  NEW_SIZE=$(du -sh node_modules | cut -f1)
+  log_info "New production node_modules size: $NEW_SIZE"
+fi
+
 log_success "Production dependencies installed"
 
 # 🎯 Create Procfile with BP_START_COMMAND
