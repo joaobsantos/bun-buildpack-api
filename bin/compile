@@ -303,27 +303,24 @@ log_success "Production dependencies installed"
 # 🎯 Create Procfile with BP_START command
 log_step "Creating Procfile"
 
-# First, let's fix the PATH for the current build environment
-export PATH="$HEROKU_DIR/node/bin:$HEROKU_DIR/bin:$PATH"
-
-# Try to determine the best way to run serve
+# Determine if BP_START is a script name or a command
 START_CMD=""
-if [ -f "node_modules/.bin/serve" ]; then
-  # Best case: serve is installed locally with executable
-  START_CMD="\$HOME/.heroku/node/bin/node node_modules/.bin/serve -s . -l \$PORT"
-  log_info "Using local serve executable"
-elif [ -f "node_modules/serve/lib/main.js" ]; then
-  # Fallback: run serve's main.js directly with node (use full path to node)
-  START_CMD="\$HOME/.heroku/node/bin/node node_modules/serve/lib/main.js -s . -l \$PORT"
-  log_info "Using serve main.js directly with full node path"
-elif is_true "$BP_NODE" && [ -f ".heroku/node/bin/node" ]; then
-  # Last resort: use the provided BP_START but ensure node is in PATH
-  START_CMD="PATH=\$HOME/.heroku/node/bin:\$HOME/.heroku/bin:\$PATH $BP_START"
-  log_info "Using BP_START with PATH prefix: $BP_START"
-else
-  # Use BP_START as-is
+
+# Check if BP_START is a script name in package.json
+if [ -f "package.json" ] && grep -q "\"$BP_START\":" package.json; then
+  # It's a script name - run it with bun run
+  START_CMD="bun run $BP_START"
+  log_info "Detected script name: $BP_START"
+  log_info "Will run: bun run $BP_START"
+elif [[ "$BP_START" == *"bun"* ]] || [[ "$BP_START" == *"node"* ]] || [[ "$BP_START" == *"./"* ]]; then
+  # It's already a full command (contains bun, node, or ./)
   START_CMD="$BP_START"
-  log_info "Using BP_START as-is: $BP_START"
+  log_info "Detected full command: $BP_START"
+else
+  # Assume it's a script name even if not found in package.json
+  START_CMD="bun run $BP_START"
+  log_info "Assuming script name: $BP_START"
+  log_info "Will run: bun run $BP_START"
 fi
 
 # Write the Procfile
