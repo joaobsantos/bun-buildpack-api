@@ -303,24 +303,22 @@ log_success "Created Procfile: web: $WEB_CMD"
 if is_true "$BP_CLEAN"; then
   log_step "Cleaning up to reduce slug size"
 
-  # For bundled builds, we need workspace packages + production dependencies
+  # For bundled builds, workspace packages are either bundled or physically copied
   # Check if this is a bundled build by looking at dist/package.json
   if [ -f "$EXEC_DIR/dist/package.json" ]; then
     log_info "Detected bundled build - setting up dependencies"
 
-    # First, copy workspace packages from root to dist
-    if [ -d "$BUILD_DIR/node_modules/@newsoftds" ]; then
-      log_info "Copying workspace packages to dist/node_modules"
-      mkdir -p "$EXEC_DIR/dist/node_modules/@newsoftds"
-      cp -r "$BUILD_DIR/node_modules/@newsoftds/"* "$EXEC_DIR/dist/node_modules/@newsoftds/"
-      WORKSPACE_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules/@newsoftds" | cut -f1)
-      log_info "Workspace packages size: $WORKSPACE_SIZE"
-    fi
+    # Workspace packages are already in place:
+    # - Simple packages (@newsoftds/graphiql-auth, etc.) are BUNDLED into index.js
+    # - api-client-server is PHYSICALLY COPIED to dist/node_modules/@newsoftds/api-client-server
+    # So we don't need to copy anything from root node_modules
 
-    # Remove Prisma generated files from dist to avoid name conflicts
-    if [ -d "$EXEC_DIR/dist/prisma/generated" ]; then
-      log_info "Removing Prisma generated files from dist (to avoid conflicts)"
-      rm -rf "$EXEC_DIR/dist/prisma/generated"
+    # Just verify api-client-server is there
+    if [ -d "$EXEC_DIR/dist/node_modules/@newsoftds/api-client-server" ]; then
+      WORKSPACE_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules/@newsoftds" | cut -f1)
+      log_info "Workspace packages already in place (size: $WORKSPACE_SIZE)"
+    else
+      log_warning "api-client-server not found in dist/node_modules - build may have failed"
     fi
 
     # Install production dependencies for the bundled app
