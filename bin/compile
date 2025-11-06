@@ -326,35 +326,23 @@ if is_true "$BP_CLEAN"; then
     # This is a fallback/verification step
     cd "$EXEC_DIR/dist"
 
-    # Install dependencies using the install script created by build-heroku.ts
-    # This script handles workspace detection issues
-    if [ -f "install.ts" ]; then
-      log_info "Running custom install script..."
-      if bun install.ts 2>&1 | indent; then
-        log_success "Dependencies installed via custom script"
-      else
-        log_warning "Custom install script failed, trying direct install"
-        # Fallback to direct install
-        rm -f bun.lockb bunfig.toml 2>/dev/null || true
-        if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
-          log_success "Dependencies installed (fallback method)"
-        else
-          log_error "All install attempts failed"
-          exit 1
-        fi
-      fi
-    else
-      log_info "Installing production dependencies in dist/"
-      rm -f bun.lockb bunfig.toml 2>/dev/null || true
+    # Install dependencies with BUN_CONFIG_FROZEN_LOCKFILE=false to override CI defaults
+    # Heroku sets CI=true which makes Bun default to frozen lockfile mode
+    log_info "Installing production dependencies in dist/"
 
-      if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
-        log_success "Production dependencies installed"
-      elif bun install --no-save --ignore-scripts 2>&1 | indent; then
-        log_success "Dependencies installed (non-production mode)"
-      else
-        log_error "Install failed"
-        exit 1
-      fi
+    # Remove all lockfiles to prevent frozen lockfile issues
+    rm -f bun.lockb package-lock.json yarn.lock 2>/dev/null || true
+
+    # Export the environment variable so bun install sees it
+    export BUN_CONFIG_FROZEN_LOCKFILE=false
+
+    if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
+      log_success "Production dependencies installed"
+    elif bun install --no-save --ignore-scripts 2>&1 | indent; then
+      log_success "Dependencies installed (non-production mode)"
+    else
+      log_error "Install failed"
+      exit 1
     fi
 
     DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
