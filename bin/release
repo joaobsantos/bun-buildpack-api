@@ -1,19 +1,74 @@
-#!/bin/sh
+#!/usr/bin/env bash
+set -e
+
+# bin/release <build-dir> <cache-dir>
 
 BUILD_DIR=${1:-.}
+CACHE_DIR=${2:-}
+ENV_DIR=${3:-}
 
-# Check if we have a Procfile to extract command from
-if [ -f "$BUILD_DIR/Procfile" ]; then
-  # Extract the web command from Procfile
-  WEB_COMMAND=$(grep "^web:" "$BUILD_DIR/Procfile" | sed 's/^web: *//')
-else
-  # Default command
-  WEB_COMMAND="bun index.js"
-fi
+# Helper to read env vars from either real env or $ENV_DIR files
+get_env_var() {
+  local var_name="$1"
+  if [ -n "${!var_name}" ]; then
+    echo "${!var_name}"
+  elif [ -n "$ENV_DIR" ] && [ -f "$ENV_DIR/$var_name" ]; then
+    cat "$ENV_DIR/$var_name"
+  fi
+}
 
-# Output valid YAML for Heroku
-cat <<EOF
+WEB_CMD=$(get_env_var WEB_START_COMMAND || true)
+WEB_CMD_FALLBACK=$(get_env_var WEB_start_COMMAND || true)
+START_CMD=$(get_env_var START_COMMAND || true)
+APP_DIR=$(get_env_var APP_DIR || true)
+RUNTIME_DIR=$(get_env_var RUNTIME_DIR || true)
+START_IN_RUNTIME=$(get_env_var START_IN_RUNTIME || true)
+
+# WEB_START_COMMAND is required to define the web process. If absent, we emit an empty map.
+if [ -n "$WEB_CMD" ]; then
+  cat <<EOF
 ---
 default_process_types:
-  web: $WEB_COMMAND
+  web: $WEB_CMD
 EOF
+elif [ -n "$WEB_CMD_FALLBACK" ]; then
+  cat <<EOF
+---
+default_process_types:
+  web: $WEB_CMD_FALLBACK
+EOF
+elif [ -n "$START_CMD" ]; then
+  # Compose a cwd change based on APP_DIR and RUNTIME_DIR if provided
+  CWD=""
+  if [ -n "$APP_DIR" ]; then
+    CWD="$APP_DIR"
+  fi
+  if [ "$START_IN_RUNTIME" = "true" ]; then
+    if [ -n "$RUNTIME_DIR" ] && [ "$RUNTIME_DIR" != "." ]; then
+      if [ -n "$CWD" ]; then
+        CWD="$CWD/$RUNTIME_DIR"
+      else
+        CWD="$RUNTIME_DIR"
+      fi
+    fi
+  fi
+  if [ -n "$CWD" ]; then
+    CMD="cd $CWD && $START_CMD"
+  else
+    CMD="$START_CMD"
+  fi
+  cat <<EOF
+---
+default_process_types:
+  web: $CMD
+EOF
+else
+  # No Procfile and no WEB_START_COMMAND provided: do not define any default processes
+  cat <<EOF
+---
+default_process_types: {}
+EOF
+fi
+
+exit 0
+
