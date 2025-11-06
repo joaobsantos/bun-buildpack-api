@@ -326,8 +326,8 @@ if is_true "$BP_CLEAN"; then
     # Install production dependencies for the bundled app
     cd "$EXEC_DIR/dist"
     log_info "Installing production dependencies in dist/"
-    # Don't use --frozen-lockfile since workspace packages were already copied
-    bun install --production 2>&1 | indent
+    # Explicitly disable frozen lockfile and ignore scripts (no DB needed yet)
+    bun install --production --no-frozen-lockfile --ignore-scripts 2>&1 | indent
 
     DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
     log_info "Total dist/node_modules size: $DIST_NM_SIZE"
