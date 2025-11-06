@@ -327,11 +327,38 @@ log_success "Created Procfile: web: $WEB_CMD"
 if is_true "$BP_CLEAN"; then
   log_step "Cleaning up to reduce slug size"
 
-  # Remove root node_modules (keep runtime deps)
+  # Preserve workspace packages but remove external dependencies
   if [ -d "$BUILD_DIR/node_modules" ]; then
     ROOT_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1)
-    log_info "Removing root node_modules (size: $ROOT_NM_SIZE)"
+    log_info "Root node_modules size: $ROOT_NM_SIZE"
+
+    # Create a temp directory for workspace packages
+    WORKSPACE_BACKUP="$BUILD_DIR/.workspace-backup"
+    mkdir -p "$WORKSPACE_BACKUP"
+
+    # Copy workspace packages (@newsoftds scope)
+    if [ -d "$BUILD_DIR/node_modules/@newsoftds" ]; then
+      log_info "Preserving workspace packages (@newsoftds)"
+      cp -r "$BUILD_DIR/node_modules/@newsoftds" "$WORKSPACE_BACKUP/"
+      WORKSPACE_SIZE=$(du -sh "$WORKSPACE_BACKUP/@newsoftds" | cut -f1)
+      log_info "Workspace packages size: $WORKSPACE_SIZE"
+    fi
+
+    # Remove all node_modules
     rm -rf "$BUILD_DIR/node_modules"
+
+    # Restore only workspace packages
+    mkdir -p "$BUILD_DIR/node_modules"
+    if [ -d "$WORKSPACE_BACKUP/@newsoftds" ]; then
+      cp -r "$WORKSPACE_BACKUP/@newsoftds" "$BUILD_DIR/node_modules/"
+      log_success "Restored workspace packages to node_modules"
+    fi
+
+    # Clean up backup
+    rm -rf "$WORKSPACE_BACKUP"
+
+    FINAL_NM_SIZE=$(du -sh "$BUILD_DIR/node_modules" | cut -f1 2>/dev/null || echo "0")
+    log_info "Final node_modules size: $FINAL_NM_SIZE (workspace packages only)"
   fi
 
   # Remove app node_modules if different from root
