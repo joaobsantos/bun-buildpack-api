@@ -9,7 +9,9 @@ log_header() { echo ""; echo "🚀 $1"; echo ""; }
 log_step() { echo "   📦 $1"; }
 log_success() { echo "   ✅ $1"; }
 log_info() { echo "   ℹ️  $1"; }
+log_warning() { echo "   ⚠️  $1"; }
 log_error() { echo "   ❌ $1"; }
+indent() { sed "s/^/       /"; }
 
 BUILD_DIR=${1:-.}
 CACHE_DIR=${2:-}
