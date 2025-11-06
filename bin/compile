@@ -358,6 +358,12 @@ if is_true "$BP_CLEAN"; then
       log_info "Workspace packages size: $WORKSPACE_SIZE"
     fi
 
+    # Remove Prisma generated files from dist to avoid name conflicts
+    if [ -d "$EXEC_DIR/dist/prisma/generated" ]; then
+      log_info "Removing Prisma generated files from dist (to avoid conflicts)"
+      rm -rf "$EXEC_DIR/dist/prisma/generated"
+    fi
+
     # Install production dependencies for the bundled app
     cd "$EXEC_DIR/dist"
     log_info "Installing production dependencies in dist/"
