@@ -333,6 +333,9 @@ if is_true "$BP_CLEAN"; then
     # Remove all lockfiles to prevent frozen lockfile issues
     rm -f bun.lockb package-lock.json yarn.lock 2>/dev/null || true
 
+    # Enable pipefail so pipe doesn't swallow exit codes
+    set -o pipefail
+
     # Export the environment variable so bun install sees it
     export BUN_CONFIG_FROZEN_LOCKFILE=false
 
@@ -341,9 +344,12 @@ if is_true "$BP_CLEAN"; then
     elif bun install --no-save --ignore-scripts 2>&1 | indent; then
       log_success "Dependencies installed (non-production mode)"
     else
-      log_error "Install failed"
+      log_error "Install failed - this should cause the build to fail"
       exit 1
     fi
+
+    # Disable pipefail after install
+    set +o pipefail
 
     DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
     log_info "Total dist/node_modules size: $DIST_NM_SIZE"
