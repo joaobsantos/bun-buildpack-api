@@ -1,0 +1,19 @@
+#!/bin/sh
+
+BUILD_DIR=${1:-.}
+
+# Check if we have a Procfile to extract command from
+if [ -f "$BUILD_DIR/Procfile" ]; then
+  # Extract the web command from Procfile
+  WEB_COMMAND=$(grep "^web:" "$BUILD_DIR/Procfile" | sed 's/^web: *//')
+else
+  # Default command
+  WEB_COMMAND="bun index.js"
+fi
+
+# Output valid YAML for Heroku
+cat <<EOF
+---
+default_process_types:
+  web: $WEB_COMMAND
+EOF

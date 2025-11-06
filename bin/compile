@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# NewsoftDS API Server Buildpack for Heroku
+# Optimized for API deployments with aggressive size reduction
+#
+set -e
+
+# 🎨 Pretty logging functions
+log_header() { echo ""; echo "🚀 $1"; echo ""; }
+log_step() { echo "   📦 $1"; }
+log_success() { echo "   ✅ $1"; }
+log_info() { echo "   ℹ️  $1"; }
+log_error() { echo "   ❌ $1"; }
+
+# 📂 Directory setup
+BUILD_DIR=${1:-.}
+CACHE_DIR=${2:-}
+ENV_DIR=${3:-}
+
+log_header "NewsoftDS API Buildpack v1.0 (Optimized for Production)"
+
+# 🔧 Export environment variables from Heroku
+export_env_dir() {
+  if [ -d "$1" ]; then
+    for e in $(ls $1); do
+      case $e in
+        PATH|GIT_DIR|CPATH|CPPATH|LD_PRELOAD|LIBRARY_PATH) ;;
+        *) export "$e=$(cat $1/$e)" ;;
+      esac
+    done
+  fi
+}
+
+export_env_dir $ENV_DIR
+
+# ⚙️ Configuration with defaults
+BP_NODE=${BP_NODE:-"false"}
+BP_NODE_VERSION=${BP_NODE_VERSION:-"22.11.0"}
+BP_BUN_VERSION=${BP_BUN_VERSION:-"latest"}
+BP_INSTALL=${BP_INSTALL:-"bun install"}
+BP_CLEAN=${BP_CLEAN:-"true"}
+
+# Helper function to check boolean values
+is_true() {
+  case "$1" in
+    true|TRUE|True|1|yes|YES|Yes|on|ON|On) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ❗ Validate required environment variables
+VALIDATION_FAILED=false
+
+if [ -z "$BP_BUILD" ]; then
+  log_error "BP_BUILD environment variable is required!"
+  log_info "Set it with: heroku config:set BP_BUILD=@newsoftds/api-gateway-server"
+  log_info "Or: heroku config:set BP_BUILD=apis/servers/api-gateway-server"
+  log_info "Available projects:"
+  find . -name "package.json" -path "*/servers/*" -o -path "*/packages/*" 2>/dev/null | head -5 || true
+  VALIDATION_FAILED=true
+fi
+
+if [ -z "$BP_START" ]; then
+  log_error "BP_START environment variable is required!"
+  log_info "Set it with: heroku config:set BP_START=start"
+  log_info "Can be a script name (start, build:start) or command (bun index.js)"
+  log_info "Script names are resolved from the built package.json"
+  VALIDATION_FAILED=true
+fi
+
+if [ "$VALIDATION_FAILED" = true ]; then
+  log_header "❌ Build Failed - Missing Required Environment Variables"
+  log_info "Please set the required variables and redeploy:"
+  log_info "heroku config:set BP_BUILD=your-project-or-path"
+  log_info "heroku config:set BP_START='bun index.js'"
+  exit 1
+fi
+
+log_info "Project to build: $BP_BUILD"
+log_info "Start command: $BP_START"
+if is_true "$BP_NODE"; then
+  log_info "Node.js: enabled (v$BP_NODE_VERSION)"
+else
+  log_info "Node.js: disabled (Bun only)"
+fi
+log_info "Bun version: $BP_BUN_VERSION"
+
+# 🏗️ Setup build environment
+HEROKU_DIR=$BUILD_DIR/.heroku
+mkdir -p $HEROKU_DIR/bin
+
+# Move to build directory
+cd $BUILD_DIR
+
+# 📦 Install Node.js (optional)
+if is_true "$BP_NODE"; then
+  log_step "Installing Node.js v$BP_NODE_VERSION"
+  NODE_DISTRO="node-v$BP_NODE_VERSION-linux-x64"
+  NODE_TAR="$NODE_DISTRO.tar.xz"
+  NODE_URL="https://nodejs.org/dist/v$BP_NODE_VERSION/$NODE_TAR"
+  
+  curl -O $NODE_URL
+  tar -xf $NODE_TAR || { 
+    log_error "Error extracting Node.js tarball"
+    exit 1
+  }
+  mkdir -p $HEROKU_DIR/node
+  mv $NODE_DISTRO/* $HEROKU_DIR/node
+  rm -rf $NODE_TAR $NODE_DISTRO
+  
+  export PATH="$HEROKU_DIR/node/bin:$PATH"
+  log_success "Node.js installed: $(node --version)"
+else
+  log_step "Skipping Node.js installation (BP_NODE=false)"
+fi
+
+# 🥯 Install Bun
+log_step "Installing Bun"
+
+# Clean up any previous Bun installations to avoid bloat
+rm -rf $BUILD_DIR/.heroku/cache $BUILD_DIR/.heroku/.cache $BUILD_DIR/.heroku/install
+log_info "Cleaned previous Bun cache"
+
+# Determine Bun version
+INSTALL_VERSION_OPTION=""
+if [ -f runtime.bun.txt ]; then
+  INSTALL_VERSION_OPTION="-s bun-$(cat runtime.bun.txt)"
+  log_info "Using Bun version from runtime.bun.txt: $(cat runtime.bun.txt)"
+elif [ -f runtime.txt ]; then
+  INSTALL_VERSION_OPTION="-s bun-$(cat runtime.txt)"
+  log_info "Using Bun version from runtime.txt: $(cat runtime.txt)"
+elif [ "$BP_BUN_VERSION" != "latest" ]; then
+  INSTALL_VERSION_OPTION="-s bun-$BP_BUN_VERSION"
+  log_info "Using Bun version from BP_BUN_VERSION: $BP_BUN_VERSION"
+fi
+
+export BUN_INSTALL=$BUILD_DIR/.heroku
+# Explicitly set BUN_DIR to a temp location that we'll clean
+export BUN_DIR=/tmp/bun-cache-$$
+curl -fsSL https://bun.sh/install | bash $INSTALL_VERSION_OPTION
+export PATH="$BUN_INSTALL/bin:$PATH"
+log_success "Bun installed: $(bun --version)"
+
+# Clean up Bun temp cache immediately
+rm -rf /tmp/bun-cache-*
+log_info "Bun installation size: $(du -sh $BUILD_DIR/.heroku | cut -f1)"
+
+# 📋 Setup runtime environment
+PROFILE_PATH="$BUILD_DIR/.profile.d/bun.sh"
+mkdir -p $(dirname $PROFILE_PATH)
+if is_true "$BP_NODE"; then
+  cat > $PROFILE_PATH << 'EOF'
+export PATH="$HOME/.heroku/node/bin:$PATH"
+export PATH="$HOME/.heroku/bin:$PATH"
+EOF
+else
+  cat > $PROFILE_PATH << 'EOF'
+export PATH="$HOME/.heroku/bin:$PATH"
+EOF
+fi
+
+# 📦 Install monorepo dependencies
+log_step "Installing monorepo dependencies"
+log_info "Running: $BP_INSTALL --ignore-scripts"
+
+# Add --ignore-scripts to prevent postinstall database connections
+if [[ "$BP_INSTALL" == *"--ignore-scripts"* ]]; then
+  eval $BP_INSTALL
+else
+  eval "$BP_INSTALL --ignore-scripts"
+fi
+
+if [ $? -eq 0 ]; then
+  log_success "Dependencies installed"
+else
+  log_error "Dependency installation failed"
+  exit 1
+fi
+
+# 🏗️ Build the project
+log_step "Building $BP_BUILD"
+
+# Determine project path - support both @newsoftds/name and path formats
+PROJECT_PATH=""
+if [[ "$BP_BUILD" == @* ]]; then
+  # It's a package name, try to find it
+  case $BP_BUILD in
+    "@newsoftds/api-gateway-server")
+      PROJECT_PATH="apis/servers/api-gateway-server"
+      ;;
+    "@newsoftds/api-clinic-server")
+      PROJECT_PATH="apis/servers/api-clinic-server"
+      ;;
+    "@newsoftds/api-university-server")
+      PROJECT_PATH="apis/servers/api-university-server"
+      ;;
+    "@newsoftds/portal-paciente")
+      PROJECT_PATH="web/packages/portal-paciente"
+      ;;
+    *)
+      # Try to auto-detect
+      for project_file in $(find . -name "package.json" -not -path "./node_modules/*" 2>/dev/null); do
+        project_name=$(cat "$project_file" | bun -e 'const p=JSON.parse(await Bun.stdin.text()); console.log(p.name || "")' 2>/dev/null)
+        if [ "$project_name" = "$BP_BUILD" ]; then
+          PROJECT_PATH=$(dirname "$project_file")
+          break
+        fi
+      done
+      ;;
+  esac
+else
+  # It's already a path
+  PROJECT_PATH="$BP_BUILD"
+fi
+
+if [ -z "$PROJECT_PATH" ] || [ ! -d "$PROJECT_PATH" ]; then
+  log_error "Project not found: $BP_BUILD"
+  log_info "Check that BP_BUILD is either a valid package name or path"
+  exit 1
+fi
+
+log_info "Project path: $PROJECT_PATH"
+cd "$PROJECT_PATH"
+
+# Check which build script to use
+if [ -f "package.json" ] && grep -q '"build:heroku"' package.json; then
+  log_info "Running build:heroku script"
+  bun run build:heroku
+elif [ -f "package.json" ] && grep -q '"build"' package.json; then
+  log_info "Running build script"
+  bun run build
+else
+  log_error "No build script found in package.json"
+  log_info "Add a 'build:heroku' or 'build' script to your package.json"
+  exit 1
+fi
+
+log_success "Build completed"
+
+# 📦 Check if dist directory was created
+if [ ! -d "dist" ]; then
+  log_error "Build did not create a dist directory"
+  exit 1
+fi
+
+# Move dist contents to app root
+log_step "Preparing deployment"
+cp -r dist/* $BUILD_DIR/
+cd $BUILD_DIR
+
+# 🔍 Check if we have a package.json in the build output
+if [ ! -f "package.json" ]; then
+  log_error "No package.json found in build output"
+  log_info "Your build script should generate a package.json in dist/"
+  exit 1
+fi
+
+# 📦 Install production dependencies
+log_step "Installing production dependencies"
+
+# CRITICAL: Remove monorepo node_modules before production install
+# This prevents the 3.0G monorepo node_modules from bloating the slug
+if [ -d "node_modules" ]; then
+  MONOREPO_NM_SIZE=$(du -sh node_modules 2>/dev/null | cut -f1)
+  log_info "Removing monorepo node_modules (size: $MONOREPO_NM_SIZE)"
+  rm -rf node_modules
+  log_success "Monorepo node_modules removed - will install fresh production deps"
+else
+  log_info "No existing node_modules found"
+fi
+
+# Remove any existing lockfile to ensure fresh install
+rm -f bun.lockb bun.lock package-lock.json yarn.lock
+log_info "Removed any existing lockfiles"
+
+# Force Bun to not use frozen lockfile (Heroku might set CI=true)
+export CI=false
+export BUN_INSTALL_FROZEN_LOCKFILE=false
+
+# Check if we should use npm or bun for install
+if is_true "$BP_NODE" && [ -f "package.json" ]; then
+  # Use npm for production install when Node is available
+  log_info "Running: npm install --production --ignore-scripts"
+  npm install --production --ignore-scripts || {
+    log_error "npm installation failed, trying with bun..."
+    bun install --production --ignore-scripts --no-frozen-lockfile || {
+      log_error "Installation failed completely"
+      exit 1
+    }
+  }
+else
+  # Use bun for production install
+  log_info "Running: bun install --production --ignore-scripts --no-frozen-lockfile"
+  bun install --production --ignore-scripts --no-frozen-lockfile || {
+    log_error "Installation failed, trying without production flag..."
+    bun install --ignore-scripts --no-frozen-lockfile || {
+      log_error "Installation failed completely"
+      exit 1
+    }
+  }
+fi
+log_success "Production dependencies installed"
+
+# 🎯 Create Procfile with BP_START command
+log_step "Creating Procfile"
+
+# First, let's fix the PATH for the current build environment
+export PATH="$HEROKU_DIR/node/bin:$HEROKU_DIR/bin:$PATH"
+
+# Try to determine the best way to run serve
+START_CMD=""
+if [ -f "node_modules/.bin/serve" ]; then
+  # Best case: serve is installed locally with executable
+  START_CMD="\$HOME/.heroku/node/bin/node node_modules/.bin/serve -s . -l \$PORT"
+  log_info "Using local serve executable"
+elif [ -f "node_modules/serve/lib/main.js" ]; then
+  # Fallback: run serve's main.js directly with node (use full path to node)
+  START_CMD="\$HOME/.heroku/node/bin/node node_modules/serve/lib/main.js -s . -l \$PORT"
+  log_info "Using serve main.js directly with full node path"
+elif is_true "$BP_NODE" && [ -f ".heroku/node/bin/node" ]; then
+  # Last resort: use the provided BP_START but ensure node is in PATH
+  START_CMD="PATH=\$HOME/.heroku/node/bin:\$HOME/.heroku/bin:\$PATH $BP_START"
+  log_info "Using BP_START with PATH prefix: $BP_START"
+else
+  # Use BP_START as-is
+  START_CMD="$BP_START"
+  log_info "Using BP_START as-is: $BP_START"
+fi
+
+# Write the Procfile
+echo "web: $START_CMD" > Procfile
+log_success "Created Procfile with: web: $START_CMD"
+
+# 🧹 Cleanup to reduce slug size
+if is_true "$BP_CLEAN"; then
+  log_step "Cleaning up to reduce slug size"
+  
+  # Show what's taking space before cleanup
+  log_info "Largest directories before cleanup:"
+  du -sh * 2>/dev/null | sort -rh | head -10 || true
+  
+  # Remove source directories (we already copied dist to root)
+  rm -rf apis web desktop packages utils tools apps
+  log_info "Removed source directories"
+  
+  # DON'T remove node_modules - we need it for runtime!
+  # The production dependencies are already minimal
+  log_info "Keeping node_modules for runtime dependencies"
+  
+  # Remove caches and build artifacts
+  rm -rf .nx .cache tmp .heroku/cache
+  rm -rf *.md *.lock *.lockb tsconfig*.json nx.json biome.json
+  log_info "Removed build artifacts and caches"
+
+  # Aggressive node_modules cleanup for production
+  if [ -d "node_modules" ]; then
+    log_step "Aggressively cleaning node_modules"
+
+    # Remove test files and directories
+    find node_modules -type d \( -name "test" -o -name "tests" -o -name "__tests__" -o -name "coverage" \) -exec rm -rf {} + 2>/dev/null || true
+
+    # Remove documentation
+    find node_modules -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true
+    find node_modules -name "*.md" -delete 2>/dev/null || true
+    find node_modules -name "CHANGELOG*" -delete 2>/dev/null || true
+    find node_modules -name "LICENSE*" -delete 2>/dev/null || true
+
+    # Remove TypeScript source files (keep .d.ts for types)
+    find node_modules -name "*.ts" ! -name "*.d.ts" -delete 2>/dev/null || true
+
+    # Remove examples and demos
+    find node_modules -type d \( -name "examples" -o -name "example" -o -name "demo" -o -name "demos" \) -exec rm -rf {} + 2>/dev/null || true
+
+    # Remove .github, .vscode, etc.
+    find node_modules -type d \( -name ".github" -o -name ".vscode" -o -name ".idea" \) -exec rm -rf {} + 2>/dev/null || true
+
+    # Remove source maps in production
+    find node_modules -name "*.map" -delete 2>/dev/null || true
+
+    # Remove eslint configs and other dev configs
+    find node_modules -name ".eslintrc*" -delete 2>/dev/null || true
+    find node_modules -name ".prettierrc*" -delete 2>/dev/null || true
+
+    CLEANED_SIZE=$(du -sh node_modules 2>/dev/null | cut -f1)
+    log_success "node_modules cleaned - new size: $CLEANED_SIZE"
+  fi
+  
+  # Remove git directory (can be HUGE)
+  if [ -d ".git" ]; then
+    GIT_SIZE=$(du -sh .git | cut -f1)
+    log_info "Removing .git directory (size: $GIT_SIZE)"
+    rm -rf .git
+  fi
+  
+  # Check what's in .heroku directory
+  if [ -d ".heroku" ]; then
+    log_info "Contents of .heroku directory:"
+    du -sh .heroku/* 2>/dev/null | sort -rh | head -10 || true
+    
+    # Remove cache directories but keep bin and node
+    rm -rf .heroku/cache .heroku/tmp .heroku/src .heroku/plugins .heroku/.cache
+    
+    # CRITICAL: Remove the massive install directory that Bun creates
+    # but ONLY if bun executable is properly in .heroku/bin
+    if [ -f ".heroku/bin/bun" ] && [ -d ".heroku/install" ]; then
+      INSTALL_SIZE=$(du -sh .heroku/install | cut -f1)
+      log_info "Removing .heroku/install directory (size: $INSTALL_SIZE) - bun is in .heroku/bin"
+      rm -rf .heroku/install
+    fi
+    
+    # Also check for any package caches
+    find .heroku -type d -name "node_modules" -exec rm -rf {} + 2>/dev/null || true
+    find .heroku -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
+    find .heroku -type d -name "cache" -exec rm -rf {} + 2>/dev/null || true
+    
+    log_info "Cleaned .heroku directory (kept bin and node)"
+    
+    # If BP_NODE is false, remove Node.js to save space
+    if ! is_true "$BP_NODE"; then
+      if [ -d ".heroku/node" ]; then
+        NODE_SIZE=$(du -sh .heroku/node | cut -f1)
+        log_info "Removing Node.js installation (size: $NODE_SIZE) - BP_NODE=false"
+        rm -rf .heroku/node
+      fi
+    fi
+    
+    # Check final .heroku size
+    HEROKU_SIZE=$(du -sh .heroku | cut -f1)
+    log_info "Final .heroku directory size: $HEROKU_SIZE"
+  fi
+  
+  # Show what's left
+  log_info "Remaining files after cleanup:"
+  du -sh * 2>/dev/null | sort -rh | head -10 || true
+  
+  # Check hidden directories too
+  log_info "Hidden directories:"
+  du -sh .* 2>/dev/null | grep -v "^\.$" | sort -rh | head -10 || true
+  
+  # The issue might be .heroku directory with Node.js
+  if [ -d ".heroku/node" ]; then
+    NODE_SIZE=$(du -sh .heroku/node | cut -f1)
+    log_info ".heroku/node size: $NODE_SIZE"
+  fi
+  
+  SLUG_SIZE=$(du -sh . | cut -f1)
+  log_success "Cleanup complete - final slug size: $SLUG_SIZE"
+else
+  log_info "Skipping cleanup (BP_CLEAN not set to true)"
+  log_info "Set BP_CLEAN=true to reduce slug size"
+fi
+
+# 🔍 Verify executables exist
+log_step "Verifying runtime executables"
+if is_true "$BP_NODE"; then
+  if [ -f ".heroku/node/bin/node" ]; then
+    log_success "Node executable found: .heroku/node/bin/node"
+    if [ -f ".heroku/node/bin/npm" ]; then
+      log_success "NPM executable found: .heroku/node/bin/npm"
+    elif [ -f ".heroku/node/lib/node_modules/npm/bin/npm-cli.js" ]; then
+      # Create npm symlink if it doesn't exist
+      ln -sf "../lib/node_modules/npm/bin/npm-cli.js" ".heroku/node/bin/npm"
+      log_success "Created NPM symlink"
+    else
+      log_error "NPM executable NOT found!"
+    fi
+    
+    # Also check for npx
+    if [ ! -f ".heroku/node/bin/npx" ] && [ -f ".heroku/node/lib/node_modules/npm/bin/npx-cli.js" ]; then
+      ln -sf "../lib/node_modules/npm/bin/npx-cli.js" ".heroku/node/bin/npx"
+      log_success "Created NPX symlink"
+    fi
+  else
+    log_error "Node executable NOT found!"
+  fi
+fi
+
+if [ -f ".heroku/bin/bun" ]; then
+  log_success "Bun executable found: .heroku/bin/bun"
+else
+  log_error "Bun executable NOT found!"
+fi
+
+# Check if serve is installed in node_modules
+if [ -f "node_modules/.bin/serve" ]; then
+  log_success "Serve installed in node_modules"
+elif [ -f "node_modules/serve/lib/main.js" ]; then
+  log_success "Serve package found in node_modules"
+else
+  log_info "Serve not found in node_modules (may use global)"
+fi
+
+# 📊 Final summary
+log_header "Build Summary"
+log_success "Project: $BP_BUILD"
+log_success "Built from: $PROJECT_PATH"
+log_success "Start command: $BP_START"
+log_success "Slug size: $(du -sh . | cut -f1)"
+if is_true "$BP_NODE"; then
+  log_success "Runtime: Bun $(bun --version) + Node $(node --version)"
+else
+  log_success "Runtime: Bun $(bun --version)"
+fi
+
+log_info "Your app will start with: $BP_START"
+log_info "To change: heroku config:set BP_START='new-command'"
+
+log_header "✅ Build Complete - Ready for deployment!"
