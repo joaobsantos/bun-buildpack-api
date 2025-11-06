@@ -326,30 +326,36 @@ if is_true "$BP_CLEAN"; then
     # This is a fallback/verification step
     cd "$EXEC_DIR/dist"
 
-    # Install dependencies with BUN_CONFIG_FROZEN_LOCKFILE=false to override CI defaults
-    # Heroku sets CI=true which makes Bun default to frozen lockfile mode
-    log_info "Installing production dependencies in dist/"
-
-    # Remove all lockfiles to prevent frozen lockfile issues
-    rm -f bun.lockb package-lock.json yarn.lock 2>/dev/null || true
-
-    # Enable pipefail so pipe doesn't swallow exit codes
-    set -o pipefail
-
-    # Export the environment variable so bun install sees it
-    export BUN_CONFIG_FROZEN_LOCKFILE=false
-
-    if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
-      log_success "Production dependencies installed"
-    elif bun install --no-save --ignore-scripts 2>&1 | indent; then
-      log_success "Dependencies installed (non-production mode)"
+    # Check if build script already installed dependencies (lockfile exists)
+    if [ -f "bun.lockb" ]; then
+      log_success "Dependencies already installed by build script (lockfile exists)"
+      log_info "Skipping redundant install to preserve build-time dependencies"
     else
-      log_error "Install failed - this should cause the build to fail"
-      exit 1
-    fi
+      # Install dependencies with BUN_CONFIG_FROZEN_LOCKFILE=false to override CI defaults
+      # Heroku sets CI=true which makes Bun default to frozen lockfile mode
+      log_info "Installing production dependencies in dist/"
 
-    # Disable pipefail after install
-    set +o pipefail
+      # Remove non-bun lockfiles to prevent conflicts
+      rm -f package-lock.json yarn.lock 2>/dev/null || true
+
+      # Enable pipefail so pipe doesn't swallow exit codes
+      set -o pipefail
+
+      # Export the environment variable so bun install sees it
+      export BUN_CONFIG_FROZEN_LOCKFILE=false
+
+      if bun install --production --no-save --ignore-scripts 2>&1 | indent; then
+        log_success "Production dependencies installed"
+      elif bun install --no-save --ignore-scripts 2>&1 | indent; then
+        log_success "Dependencies installed (non-production mode)"
+      else
+        log_error "Install failed - this should cause the build to fail"
+        exit 1
+      fi
+
+      # Disable pipefail after install
+      set +o pipefail
+    fi
 
     DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
     log_info "Total dist/node_modules size: $DIST_NM_SIZE"
