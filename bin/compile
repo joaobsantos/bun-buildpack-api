@@ -322,16 +322,30 @@ if is_true "$BP_CLEAN"; then
     fi
 
     # Install production dependencies for the bundled app
+    # NOTE: Build script may have already installed dependencies
+    # This is a fallback/verification step
     cd "$EXEC_DIR/dist"
-    log_info "Installing production dependencies in dist/"
-    # Remove any existing lockfile to avoid conflicts
-    rm -f bun.lockb package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null || true
-    # Explicitly disable frozen lockfile and ignore scripts (no DB needed yet)
-    # Use --force and remove lockfile to ensure fresh install
-    bun install --production --ignore-scripts --no-save 2>&1 | indent || {
-      log_warning "First install attempt failed, trying without --production flag"
-      bun install --ignore-scripts --no-save 2>&1 | indent
-    }
+
+    # Check if node_modules already has the required dependencies
+    if [ -d "node_modules/graphql-yoga" ] && [ -d "node_modules/graphql" ]; then
+      log_info "Dependencies already installed by build script, skipping"
+    else
+      log_info "Installing production dependencies in dist/"
+      # Remove any existing lockfile to avoid conflicts
+      rm -f bun.lockb package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null || true
+
+      # Try multiple install strategies for maximum compatibility
+      if bun install --production --ignore-scripts 2>&1 | indent; then
+        log_success "Production dependencies installed"
+      elif bun install --ignore-scripts 2>&1 | indent; then
+        log_success "Dependencies installed (non-production mode)"
+      elif bun install --ignore-scripts --force 2>&1 | indent; then
+        log_success "Dependencies installed (forced)"
+      else
+        log_error "All install attempts failed"
+        exit 1
+      fi
+    fi
 
     DIST_NM_SIZE=$(du -sh "$EXEC_DIR/dist/node_modules" | cut -f1 2>/dev/null || echo "0")
     log_info "Total dist/node_modules size: $DIST_NM_SIZE"
