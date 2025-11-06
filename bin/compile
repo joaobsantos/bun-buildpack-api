@@ -273,35 +273,44 @@ if is_true "$BP_GENERATE_RUNTIME_PKG" && [ "$RUNTIME_DIR_CANDIDATE" != "." ]; th
 fi
 
 # Install production dependencies in runtime directory
+# Skip if package.json contains Prisma dependencies (indicates bundled build)
 if is_true "$BP_PROD_INSTALL" && [ "$RUNTIME_DIR_CANDIDATE" != "." ]; then
   if [ -f "$RUNTIME_PATH/package.json" ]; then
-    log_step "Installing production dependencies in runtime directory"
-    cd "$RUNTIME_PATH"
+    # Check if this is a bundled build (has Prisma deps, which means build already handled deps)
+    HAS_PRISMA=$(grep -q '"@prisma/client"' "$RUNTIME_PATH/package.json" && echo "true" || echo "false")
 
-    # Remove any lockfiles to avoid workspace conflicts
-    rm -f bun.lockb bun.lock package-lock.json yarn.lock
-    log_info "Removed lockfiles to avoid workspace conflicts"
+    if [ "$HAS_PRISMA" = "true" ]; then
+      log_info "Detected bundled build with Prisma - skipping production install"
+      log_info "Dependencies will be resolved from monorepo node_modules at runtime"
+    else
+      log_step "Installing production dependencies in runtime directory"
+      cd "$RUNTIME_PATH"
 
-    # Install with no frozen lockfile
-    CI='' bun install --production --no-save --ignore-scripts || {
-      log_error "Production dependency installation failed, retrying with npm..."
-      if is_true "$BP_NODE"; then
-        npm install --production --ignore-scripts || {
-          log_error "npm installation also failed"
+      # Remove any lockfiles to avoid workspace conflicts
+      rm -f bun.lockb bun.lock package-lock.json yarn.lock
+      log_info "Removed lockfiles to avoid workspace conflicts"
+
+      # Install with no frozen lockfile
+      CI='' bun install --production --no-save --ignore-scripts || {
+        log_error "Production dependency installation failed, retrying with npm..."
+        if is_true "$BP_NODE"; then
+          npm install --production --ignore-scripts || {
+            log_error "npm installation also failed"
+            exit 1
+          }
+        else
+          log_error "Installation failed and Node.js not available"
           exit 1
-        }
-      else
-        log_error "Installation failed and Node.js not available"
-        exit 1
-      fi
-    }
-    log_success "Production dependencies installed"
+        fi
+      }
+      log_success "Production dependencies installed"
 
-    # Show installed size
-    RUNTIME_SIZE=$(du -sh . | cut -f1)
-    log_info "Runtime directory size: $RUNTIME_SIZE"
+      # Show installed size
+      RUNTIME_SIZE=$(du -sh . | cut -f1)
+      log_info "Runtime directory size: $RUNTIME_SIZE"
 
-    cd "$EXEC_DIR"
+      cd "$EXEC_DIR"
+    fi
   else
     log_info "No runtime package.json found, skipping production install"
   fi
