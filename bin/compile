@@ -329,7 +329,21 @@ if is_true "$BP_CLEAN"; then
     # Check if build script already installed dependencies (lockfile exists)
     if [ -f "bun.lockb" ]; then
       log_success "Dependencies already installed by build script (lockfile exists)"
-      log_info "Skipping redundant install to preserve build-time dependencies"
+      log_info "Running verification install with frozen lockfile"
+
+      # Enable pipefail so pipe doesn't swallow exit codes
+      set -o pipefail
+
+      # Use frozen lockfile to verify/ensure deps match what was installed during build
+      if bun install --frozen-lockfile --no-save --ignore-scripts 2>&1 | indent; then
+        log_success "Dependencies verified (frozen lockfile)"
+      else
+        log_error "Install verification failed"
+        exit 1
+      fi
+
+      # Disable pipefail after install
+      set +o pipefail
     else
       # Install dependencies with BUN_CONFIG_FROZEN_LOCKFILE=false to override CI defaults
       # Heroku sets CI=true which makes Bun default to frozen lockfile mode
